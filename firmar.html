@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1080">
+<meta name="robots" content="noindex">
+<title>Firmar requisición · MDreieck</title>
+<link rel="stylesheet" href="estilos.css">
+<link rel="icon" href="icon-192.png">
+<style>
+.pasos{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.pasos li{display:flex;gap:10px;align-items:flex-start;font-size:14px;line-height:1.4}
+.pasos .ic{flex:0 0 26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:800;background:#eeedf3;color:#6a6688}
+.pasos .ok{background:#e3f5ea;color:#1f6b3d}.pasos .bad{background:#fbe4e4;color:#a61b1b}.pasos .yo{background:var(--primary);color:#fff}
+.pasos small{display:block;color:#6a6688;font-size:12px}
+.decision{display:flex;flex-direction:column;gap:10px;margin-top:16px}
+.btn-danger{background:#fff;border:1.5px solid #e2b4b4;color:#a61b1b}
+.aviso-r{background:#fbe4e4;color:#7a1414;border-radius:11px;padding:12px 14px;font-size:13.5px;line-height:1.45}
+textarea.motivo{width:100%;min-height:90px;border:1.5px solid #d9d5e8;border-radius:11px;padding:10px 12px;font:inherit;font-size:15px}
+</style>
+</head>
+<body>
+<header class="hdr plain" id="hdr">
+  <div class="hdr-row">
+    <div class="logo" id="brandLogo">MD</div>
+    <div class="htxt"><h1>Firma de requisición</h1><div class="sub">MDreieck · Recursos Humanos</div></div>
+  </div>
+</header>
+<main class="wrap" id="main"><section class="card hero"><div class="spin" style="margin:20px auto"></div><p class="hero-p">Cargando la requisición…</p></section></main>
+
+<div class="sending" id="sendOv">
+  <div class="send-box" id="sendBox">
+    <div class="spin"></div><div class="check-ic" id="checkIc">✓</div>
+    <h3 id="sendTitle">Procesando…</h3><p id="sendMsg">Un momento.</p>
+    <button class="btn btn-ghost btn-block" id="sendClose" style="margin-top:14px;display:none" onclick="ocultarOv()">Entendido</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="app.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const main = $('main');
+const Q = new URLSearchParams(location.search), R = Q.get('r') || '', T = Q.get('t') || '';
+let E = null;            // { estado, yo, b }
+let firma = null, pad = null;
+
+function ov(t, m, estado){
+  const box = $('sendBox'); box.classList.toggle('done', !!estado);
+  const ic = $('checkIc'); ic.textContent = estado === 'err' ? '⚠️' : '✓'; ic.style.color = estado === 'err' ? '#c62828' : '#1f9d55';
+  $('sendTitle').textContent = t; $('sendMsg').textContent = m;
+  $('sendClose').style.display = estado === 'err' ? 'flex' : 'none';
+  $('sendOv').classList.add('on');
+}
+function ocultarOv(){ $('sendOv').classList.remove('on'); }
+function mensaje(icono, titulo, texto, extra){
+  main.innerHTML = `<section class="card hero"><div class="ok-ic" style="${icono === '⚠️' ? 'color:#c62828' : ''}">${icono}</div>
+    <h2 class="hero-t">${titulo}</h2><p class="hero-p">${texto}</p>${extra || ''}</section>`;
+}
+async function traer(){
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 25000);
+  const r = await fetch(SURL + '?accion=firma&r=' + encodeURIComponent(R) + '&t=' + encodeURIComponent(T) + '&_=' + Date.now(), { signal:ctrl.signal });
+  clearTimeout(t);
+  const d = await r.json();
+  if(!d || d.status !== 'ok') throw new Error(d && d.msg ? d.msg : 'No se pudo abrir la requisición');
+  return d;
+}
+function sinZona(s){ return String(s || '').replace(/ \(zona.*\)$/, ''); }
+function listaFirmas(b, yo){
+  const fl = b.flujo || [];
+  const sol = `<li><span class="ic ok">✓</span><div><b>${esc(b.d.solNombre)}</b> · Solicitante<small>Firmó al enviar · ${esc(sinZona(b.recibida))}</small></div></li>`;
+  return '<ul class="pasos">' + sol + fl.map((f, i) => {
+    const cls = f.estado === 'Autorizó' ? 'ok' : f.estado === 'Rechazó' ? 'bad' : (i === yo ? 'yo' : '');
+    const ic = f.estado === 'Autorizó' ? '✓' : f.estado === 'Rechazó' ? '✕' : f.orden;
+    const sub = f.estado === 'Pendiente' ? (i === yo ? 'Tu turno' : 'Pendiente') : f.estado + ' · ' + sinZona(f.cuando);
+    return `<li><span class="ic ${cls}">${ic}</span><div><b>${esc(f.nombre)}</b>${i === yo ? ' (tú)' : ''} · ${esc(f.rol)}<small>${esc(sub)}</small></div></li>`;
+  }).join('') + '</ul>';
+}
+function resumen(b){
+  const d = b.d || {};
+  const fila = (l, v) => `<dt>${l}</dt><dd>${esc(v || '—')}</dd>`;
+  return `<dl class="resumen">${fila('Puesto', d.nombrePuesto)}${fila('Vacantes', d.numVacantes)}${fila('Área', d.solArea)}
+    ${fila('Solicitante', d.solNombre)}${fila('Motivo', d.motivo)}${fila('Contratación', d.contratacion)}
+    ${fila('Centro de trabajo', d.centro)}${fila('Ingreso', fechaCorta(d.fechaIngreso))}${fila('Sueldo neto', fmtMoney(d.sueldo))}</dl>`;
+}
+function verPDF(){
+  try{
+    const doc = generarPDF(E.b);
+    const url = URL.createObjectURL(doc.output('blob'));
+    const w = window.open(url, '_blank');
+    if(!w) doc.save(nombrePDF(E.b));
+  }catch(e){ alert('No se pudo generar el PDF: ' + e.message); }
+}
+function bajarPDF(){ try{ generarPDF(E.b).save(nombrePDF(E.b)); }catch(e){ alert(e.message); } }
+
+function pantalla(){
+  const b = E.b, f = b.flujo[E.yo];
+  const pdfBtn = '<button class="btn btn-ghost btn-block" onclick="verPDF()">📄 Ver la requisición completa (PDF)</button>';
+  if(E.estado === 'firmado'){
+    mensaje('✓', 'Ya firmaste esta requisición', `Tu firma quedó registrada el ${esc(sinZona(f.cuando))}.`,
+      `<div class="card" style="text-align:left;margin-top:14px">${listaFirmas(b, E.yo)}</div>
+       <button class="btn btn-ghost btn-block" onclick="bajarPDF()">📄 Descargar PDF</button>`);
+    return;
+  }
+  if(E.estado === 'rechazaste' || E.estado === 'rechazada'){
+    const quien = b.flujo.find(x => x.estado === 'Rechazó') || {};
+    mensaje('✕', 'Requisición rechazada', `${esc(quien.nombre || '')} la rechazó el ${esc(sinZona(quien.cuando))}.<br><b>Motivo:</b> ${esc(quien.motivo || '')}`,
+      `<div class="card" style="text-align:left;margin-top:14px">${listaFirmas(b, E.yo)}</div>`);
+    return;
+  }
+  if(E.estado === 'espera'){
+    const turno = b.flujo.find(x => x.estado === 'Pendiente') || {};
+    mensaje('⏳', 'Aún no es tu turno', `Falta que firme <b>${esc(turno.nombre || '')}</b>. Te llegará un correo cuando sea tu turno.`,
+      `<div class="card" style="text-align:left;margin-top:14px">${listaFirmas(b, E.yo)}</div>`);
+    return;
+  }
+  if(E.estado === 'pdfPendiente'){ terminar(); return; }
+
+  /* turno */
+  main.innerHTML = `
+  <section class="card">
+    <h2><span class="num ic">📄</span>Requisición ${esc(b.folio)}</h2>
+    <p class="hint">${esc(f.nombre)}: ${esc(b.d.solNombre)} (${esc(b.d.solArea)}) solicita tu ${f.tipos.indexOf('rh') >= 0 && f.tipos.indexOf('dir') < 0 ? 'autorización final' : 'autorización como director(a) del área'}.</p>
+    ${resumen(b)}
+    <div style="margin-top:14px">${pdfBtn}</div>
+  </section>
+  <section class="card">
+    <h2><span class="num ic">🖊️</span>Orden de firmas</h2>
+    ${listaFirmas(b, E.yo)}
+  </section>
+  <section class="card" id="cFirma">
+    <h2><span class="num ic">✍️</span>Tu firma</h2>
+    <div class="firma">
+      <label class="q">Nombre</label>
+      <input value="${esc(f.nombre)}" readonly style="background:#f4f3f8">
+      <div class="pad-wrap" style="margin-top:12px">
+        <canvas class="pad" id="pad" aria-label="Recuadro para dibujar tu firma"></canvas>
+        <span class="pad-ph" id="ph">Firma aquí con el dedo o el mouse</span>
+        <span class="pad-linea" aria-hidden="true"></span>
+      </div>
+      <div class="pad-acc"><button type="button" class="link-test" onclick="borrar()">Borrar firma</button></div>
+      <p class="ferr" id="ef"></p>
+    </div>
+    <label class="consent" style="margin-top:10px"><input type="checkbox" id="acepto">
+      <span>Revisé la requisición y acepto firmarla electrónicamente. Mi firma, mi correo (${esc(f.correo)}), la fecha y la hora quedarán registrados en el documento.</span></label>
+    <p class="ferr" id="errAcepto"></p>
+    <div class="decision">
+      <button class="btn btn-send btn-block" id="btnAut" onclick="autorizar()">✓ Autorizar y firmar</button>
+      <button class="btn btn-danger btn-block" onclick="mostrarRechazo()">✕ Rechazar</button>
+    </div>
+    <div id="rech" hidden style="margin-top:14px">
+      <label class="q" for="motivo">¿Por qué la rechazas? <b class="req">*</b></label>
+      <textarea class="motivo" id="motivo" maxlength="1000" placeholder="Ej. No hay presupuesto este trimestre; revisar sueldo propuesto"></textarea>
+      <p class="ferr" id="errMot"></p>
+      <button class="btn btn-danger btn-block" style="margin-top:8px" id="btnRech" onclick="rechazar()">Confirmar rechazo</button>
+    </div>
+  </section>`;
+  montar();
+}
+
+/* ---------- recuadro de firma ---------- */
+function montar(){
+  const c = $('pad'); if(!c) return;
+  const w = c.clientWidth, h = Math.round(w / 3), dpr = window.devicePixelRatio || 1;
+  c.style.height = h + 'px'; c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  const x = c.getContext('2d'); x.scale(dpr, dpr); x.lineCap = 'round'; x.lineJoin = 'round'; x.strokeStyle = '#14104a'; x.lineWidth = 2.4;
+  if(firma){ const im = new Image(); im.onload = () => x.drawImage(im, 0, 0, w, h); im.src = firma; $('ph').hidden = true; }
+  let dib = false, ult = null;
+  const pt = e => { const r = c.getBoundingClientRect(); return { x:e.clientX - r.left, y:e.clientY - r.top }; };
+  c.onpointerdown = e => { e.preventDefault(); c.setPointerCapture(e.pointerId); dib = true; ult = pt(e);
+    x.beginPath(); x.arc(ult.x, ult.y, 1.1, 0, Math.PI * 2); x.fillStyle = '#14104a'; x.fill(); $('ph').hidden = true; };
+  c.onpointermove = e => { if(!dib) return; const p = pt(e); x.beginPath(); x.moveTo(ult.x, ult.y); x.lineTo(p.x, p.y); x.stroke(); ult = p; };
+  c.onpointerup = c.onpointercancel = () => { if(!dib) return; dib = false;
+    const o = document.createElement('canvas'); o.width = 900; o.height = 300; o.getContext('2d').drawImage(c, 0, 0, 900, 300);
+    firma = o.toDataURL('image/png'); $('ef').textContent = ''; };
+  pad = c;
+}
+function borrar(){ firma = null; if(pad){ const x = pad.getContext('2d'); x.save(); x.setTransform(1,0,0,1,0,0); x.clearRect(0,0,pad.width,pad.height); x.restore(); } $('ph').hidden = false; }
+
+/* ---------- decisiones ---------- */
+function mostrarRechazo(){ $('rech').hidden = false; $('motivo').focus(); }
+async function postYRecargar(o){
+  await postServidor(o);                 // si el navegador no deja leer la respuesta, se confirma leyendo de nuevo
+  E = await traer();
+}
+async function autorizar(){
+  if(!firma){ $('ef').textContent = 'Falta dibujar tu firma.'; $('cFirma').scrollIntoView({ behavior:'smooth', block:'center' }); return; }
+  if(!$('acepto').checked){ $('errAcepto').textContent = 'Marca la casilla para poder firmar.'; return; }
+  if(!confirm('¿Autorizar y firmar la requisición ' + E.b.folio + '?')) return;
+  $('btnAut').disabled = true;
+  try{
+    ov('Registrando tu firma…', 'No cierres esta página.');
+    await postYRecargar({ accion:'firmar', r:R, t:T, decision:'Autorizó', img:firma, agente:navigator.userAgent });
+    if(E.estado !== 'pdfPendiente' && E.estado !== 'firmado') throw new Error('No se registró la firma. Intenta de nuevo.');
+    await terminar();
+  }catch(e){ $('btnAut').disabled = false; ov('No se pudo firmar', (e.message || e) + ' Revisa tu conexión e intenta de nuevo.', 'err'); }
+}
+/* Rehace el PDF con la firma y lo manda; esto avisa a RH y al siguiente firmante */
+async function terminar(){
+  if(E.estado === 'firmado'){ ocultarOv(); pantalla(); return; }
+  try{
+    ov('Generando el documento firmado…', 'No cierres esta página.');
+    const doc = generarPDF(E.b);
+    const s = doc.output('datauristring');
+    ov('Enviando…', 'Avisando a Recursos Humanos y al siguiente firmante.');
+    await postYRecargar({ accion:'pdfFirmado', r:R, t:T, pdf:{ data:s.slice(s.indexOf('base64,') + 7) } });
+    const sig = E.b.flujo.find(x => x.estado === 'Pendiente');
+    ov('¡Listo, firma registrada!', sig ? 'Se envió a ' + sig.nombre + ' para su firma. Te llegó una confirmación a tu correo.' : 'Era la última firma: Recursos Humanos ya recibió el documento final.', 'ok');
+    setTimeout(() => { ocultarOv(); pantalla(); }, 2600);
+  }catch(e){
+    ov('Falta un paso', 'Tu firma quedó registrada, pero no se terminó de enviar el documento. ' + (e.message || '') + ' Toca "Reintentar".', 'err');
+    main.innerHTML = `<section class="card hero"><div class="ok-ic" style="color:#c62828">⚠️</div><h2 class="hero-t">Falta un paso</h2>
+      <p class="hero-p">Tu firma quedó registrada. Solo falta terminar de enviar el documento.</p>
+      <button class="btn btn-primary btn-block" onclick="ocultarOv();terminar()">Reintentar</button></section>`;
+  }
+}
+async function rechazar(){
+  const m = $('motivo').value.trim();
+  if(m.length < 5){ $('errMot').textContent = 'Escribe el motivo del rechazo.'; return; }
+  if(!confirm('¿Rechazar la requisición ' + E.b.folio + '? Se avisará a Recursos Humanos y al solicitante.')) return;
+  $('btnRech').disabled = true;
+  try{
+    ov('Registrando el rechazo…', 'No cierres esta página.');
+    await postYRecargar({ accion:'firmar', r:R, t:T, decision:'Rechazó', motivo:m, agente:navigator.userAgent });
+    ov('Rechazo registrado', 'Se avisó a Recursos Humanos y al solicitante.', 'ok');
+    setTimeout(() => { ocultarOv(); pantalla(); }, 2200);
+  }catch(e){ $('btnRech').disabled = false; ov('No se pudo registrar', (e.message || e), 'err'); }
+}
+
+/* ---------- inicio ---------- */
+if(LOGO) $('brandLogo').innerHTML = '<img src="' + LOGO + '" alt="MD">';
+(async () => {
+  if(!R || !T){ mensaje('⚠️', 'Liga incompleta', 'Abre la liga directamente desde el botón "Revisar y firmar" del correo.'); return; }
+  try{ E = await traer(); pantalla(); }
+  catch(e){ mensaje('⚠️', 'No se pudo abrir', esc(e.message || e) + '<br><br>Si el problema sigue, escribe a recursoshumanos@mdreieck.com.mx'); }
+})();
+let tR = null;
+window.addEventListener('resize', () => { clearTimeout(tR); tR = setTimeout(() => { if($('pad')) montar(); }, 250); });
+</script>
+</body>
+</html>
